@@ -174,16 +174,29 @@ class SpreadsheetApp:
         # Labels editáveis das colunas
         self.column_labels = self.original_columns.copy()
         
+        # Colunas visíveis (todas visíveis por padrão)
+        self.visible_columns = {col: True for col in self.original_columns}
+        
         # Inicializa banco de dados
         self.db = DatabaseManager()
         
         # Filtros
         self.global_filters = {}  # Formato: {coluna: valor}
         self.local_filters = {}   # Formato: {coluna: {"type": "contains"|"not_contains", "value": valor}}
-        self.config_file = 'filtros_globais.json'
+        self.config_file = 'config.json'
         
-        # Carrega filtros globais salvos
-        self.load_global_filters()
+        # Highlights de linhas (chave: numero_cte, valor: cor)
+        self.highlights = {}
+        
+        # Cores disponíveis para highlight
+        self.highlight_colors = {
+            'Amarelo': '#FFFF99',
+            'Verde': '#99FF99',
+            'Azul': '#99CCFF'
+        }
+        
+        # Carrega configurações salvas (filtros, colunas visíveis e highlights)
+        self.load_config()
         
         # Estado de busca expandida
         self.search_expanded = False
@@ -203,6 +216,7 @@ class SpreadsheetApp:
         ttk.Button(top_frame, text="Configurar Filtro Global", command=self.config_global_filter).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Limpar Filtros Locais", command=self.clear_local_filters).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Editar Labels", command=self.edit_column_labels).pack(side=tk.LEFT, padx=5)
+        ttk.Button(top_frame, text="Destacar Linha", command=self.highlight_row).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Atualizar", command=self.load_data).pack(side=tk.LEFT, padx=5)
         
         # Frame de busca
@@ -228,9 +242,10 @@ class SpreadsheetApp:
         ttk.Label(self.search_options_frame, text="Buscar em:").pack(side=tk.LEFT, padx=5)
         
         self.search_column_var = tk.StringVar(value="Todas")
+        visible_labels = self.get_visible_labels()
         column_combo = ttk.Combobox(self.search_options_frame, 
                                     textvariable=self.search_column_var,
-                                    values=["Todas"] + self.column_labels,
+                                    values=["Todas"] + visible_labels,
                                     state="readonly",
                                     width=30)
         column_combo.pack(side=tk.LEFT, padx=5)
@@ -247,8 +262,9 @@ class SpreadsheetApp:
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         
         # Treeview (tabela)
+        visible_labels = self.get_visible_labels()
         self.tree = ttk.Treeview(table_frame, 
-                                columns=self.column_labels,
+                                columns=visible_labels,
                                 show='headings',
                                 yscrollcommand=vsb.set,
                                 xscrollcommand=hsb.set)
@@ -256,10 +272,14 @@ class SpreadsheetApp:
         vsb.config(command=self.tree.yview)
         hsb.config(command=self.tree.xview)
         
-        # Configura colunas
-        for col in self.column_labels:
+        # Configura colunas visíveis
+        for col in visible_labels:
             self.tree.heading(col, text=col, command=lambda c=col: self.on_column_click(c))
             self.tree.column(col, width=120, anchor=tk.W)
+        
+        # Configura tags de cores para highlights
+        for color_name, color_value in self.highlight_colors.items():
+            self.tree.tag_configure(color_name, background=color_value)
         
         self.tree.pack(fill=tk.BOTH, expand=True)
         
@@ -284,32 +304,113 @@ class SpreadsheetApp:
             self.search_options_frame.pack(fill=tk.X, side=tk.TOP, after=self.root.winfo_children()[1])
             self.search_expanded = True
     
-    def load_global_filters(self):
-        """Carrega filtros globais salvos do arquivo"""
+    def load_config(self):
+        """Carrega configurações salvas do arquivo (filtros, colunas visíveis, labels e highlights)"""
         try:
             if os.path.exists(self.config_file):
                 with open(self.config_file, 'r', encoding='utf-8') as f:
-                    self.global_filters = json.load(f)
+                    config = json.load(f)
+                    self.global_filters = config.get('global_filters', {})
+                    saved_visible = config.get('visible_columns', {})
+                    # Atualiza visible_columns com valores salvos
+                    if saved_visible:
+                        for col in self.original_columns:
+                            if col in saved_visible:
+                                self.visible_columns[col] = saved_visible[col]
+                    # Carrega labels personalizados
+                    saved_labels = config.get('column_labels', [])
+                    if saved_labels and len(saved_labels) == len(self.original_columns):
+                        self.column_labels = saved_labels
+                    # Carrega highlights
+                    self.highlights = config.get('highlights', {})
         except Exception as e:
-            print(f"Erro ao carregar filtros globais: {e}")
+            print(f"Erro ao carregar configurações: {e}")
             self.global_filters = {}
     
-    def save_global_filters(self):
-        """Salva filtros globais em arquivo"""
+    def save_config(self):
+        """Salva configurações em arquivo (filtros, colunas visíveis, labels e highlights)"""
         try:
+            config = {
+                'global_filters': self.global_filters,
+                'visible_columns': self.visible_columns,
+                'column_labels': self.column_labels,
+                'highlights': self.highlights
+            }
             with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.global_filters, f, ensure_ascii=False, indent=2)
+                json.dump(config, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"Erro ao salvar filtros globais: {e}")
+            print(f"Erro ao salvar configurações: {e}")
     
     def update_column_headers(self):
         """Atualiza cabeçalhos das colunas com indicador de filtro ativo (*)"""
-        for i, col in enumerate(self.column_labels):
+        visible_labels = self.get_visible_labels()
+        for i, col in enumerate(visible_labels):
             if col in self.local_filters:
                 display_text = f"{col} *"
             else:
                 display_text = col
             self.tree.heading(i, text=display_text, command=lambda c=col: self.on_column_click(c))
+    
+    def get_visible_labels(self):
+        """Retorna lista de labels das colunas visíveis"""
+        return [self.column_labels[i] for i, col in enumerate(self.original_columns) 
+                if self.visible_columns.get(col, True)]
+    
+    def get_visible_indices(self):
+        """Retorna lista de índices das colunas visíveis"""
+        return [i for i, col in enumerate(self.original_columns) 
+                if self.visible_columns.get(col, True)]
+    
+    def recreate_tree(self):
+        """Recria a árvore com as colunas visíveis"""
+        # Obtém o frame da tabela
+        table_frame = self.tree.master
+        
+        # Remove a árvore antiga
+        self.tree.destroy()
+        
+        # Obtém os scrollbars existentes
+        scrollbars = [w for w in table_frame.winfo_children() if isinstance(w, ttk.Scrollbar)]
+        vsb = None
+        hsb = None
+        for sb in scrollbars:
+            if sb.cget('orient') == 'vertical':
+                vsb = sb
+            elif sb.cget('orient') == 'horizontal':
+                hsb = sb
+        
+        # Cria nova árvore com colunas visíveis
+        visible_labels = self.get_visible_labels()
+        self.tree = ttk.Treeview(table_frame, 
+                                columns=visible_labels,
+                                show='headings',
+                                yscrollcommand=vsb.set if vsb else None,
+                                xscrollcommand=hsb.set if hsb else None)
+        
+        if vsb:
+            vsb.config(command=self.tree.yview)
+        if hsb:
+            hsb.config(command=self.tree.xview)
+        
+        # Configura colunas visíveis
+        for col in visible_labels:
+            self.tree.heading(col, text=col, command=lambda c=col: self.on_column_click(c))
+            self.tree.column(col, width=120, anchor=tk.W)
+        
+        # Configura tags de cores para highlights
+        for color_name, color_value in self.highlight_colors.items():
+            self.tree.tag_configure(color_name, background=color_value)
+        
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Bind para edição de células
+        self.tree.bind('<Double-1>', self.on_double_click)
+        
+        # Atualiza cabeçalhos com indicadores de filtro
+        self.update_column_headers()
+        
+        # Recarrega dados
+        self.load_data()
     
     def on_column_click(self, column_name):
         """Abre diálogo de filtro ao clicar no cabeçalho da coluna"""
@@ -445,12 +546,25 @@ class SpreadsheetApp:
             data = filtered_data
         
         # Insere dados na tabela (reordena para corresponder às colunas)
+        # Mapeia todas as colunas no formato de exibição
+        all_columns_order = [1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]  # emissao_cte, numero_cte, notas, ...
+        visible_indices = self.get_visible_indices()
+        
         for row in data:
-            # row[0] é numero_cte (chave primária)
-            # Reordena: emissao_cte, numero_cte, notas, ...
-            display_row = (row[1], row[0], row[2], row[3], row[4], row[5], 
-                          row[6], row[7], row[8], row[9], row[10], row[11], row[12])
-            self.tree.insert('', tk.END, values=display_row)
+            # Monta a linha completa
+            full_row = [row[i] for i in all_columns_order]
+            # Filtra apenas as colunas visíveis
+            display_row = tuple(full_row[i] for i in visible_indices)
+            
+            # Obtém numero_cte (chave primária, está no índice 0 do row)
+            numero_cte = str(row[0])
+            
+            # Aplica highlight se existir
+            if numero_cte in self.highlights:
+                color = self.highlights[numero_cte]
+                self.tree.insert('', tk.END, values=display_row, tags=(color,))
+            else:
+                self.tree.insert('', tk.END, values=display_row)
         
         self.status_var.set(f"Total de registros: {len(data)}")
     
@@ -563,19 +677,19 @@ class SpreadsheetApp:
             val = value_var.get()
             if col and val:
                 self.global_filters[col] = val
-                self.save_global_filters()
+                self.save_config()
                 update_filter_list()
         
         def remove_filter():
             col = column_var.get()
             if col in self.global_filters:
                 del self.global_filters[col]
-                self.save_global_filters()
+                self.save_config()
                 update_filter_list()
         
         def clear_filters():
             self.global_filters.clear()
-            self.save_global_filters()
+            self.save_config()
             update_filter_list()
         
         def update_filter_list():
@@ -620,11 +734,25 @@ class SpreadsheetApp:
         # Busca no banco (ignora filtros locais)
         results = self.db.search_data(column, search_term)
         
-        # Insere resultados
+        # Insere resultados (apenas colunas visíveis)
+        all_columns_order = [1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        visible_indices = self.get_visible_indices()
+        
         for row in results:
-            display_row = (row[1], row[0], row[2], row[3], row[4], row[5], 
-                          row[6], row[7], row[8], row[9], row[10], row[11], row[12])
-            self.tree.insert('', tk.END, values=display_row)
+            # Monta a linha completa
+            full_row = [row[i] for i in all_columns_order]
+            # Filtra apenas as colunas visíveis
+            display_row = tuple(full_row[i] for i in visible_indices)
+            
+            # Obtém numero_cte (está no índice 0 do row)
+            numero_cte = str(row[0])
+            
+            # Aplica highlight se existir
+            if numero_cte in self.highlights:
+                color = self.highlights[numero_cte]
+                self.tree.insert('', tk.END, values=display_row, tags=(color,))
+            else:
+                self.tree.insert('', tk.END, values=display_row)
         
         self.status_var.set(f"Resultados da busca: {len(results)}")
         
@@ -638,12 +766,12 @@ class SpreadsheetApp:
         self.load_data()  # Recarrega dados normais com filtros locais
     
     def edit_column_labels(self):
-        """Permite editar os labels das colunas"""
+        """Permite editar os labels das colunas e visibilidade"""
         dialog = tk.Toplevel(self.root)
-        dialog.title("Editar Labels das Colunas")
-        dialog.geometry("500x500")
+        dialog.title("Editar Labels e Visibilidade das Colunas")
+        dialog.geometry("650x500")
         
-        ttk.Label(dialog, text="Editar nomes das colunas:").pack(pady=10)
+        ttk.Label(dialog, text="Editar nomes e visibilidade das colunas:").pack(pady=10)
         
         canvas = tk.Canvas(dialog)
         scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
@@ -658,11 +786,19 @@ class SpreadsheetApp:
         canvas.configure(yscrollcommand=scrollbar.set)
         
         entry_vars = []
+        checkbox_vars = []
+        
         for i, (original, current) in enumerate(zip(self.original_columns, self.column_labels)):
             frame = ttk.Frame(scrollable_frame)
             frame.pack(fill=tk.X, padx=10, pady=5)
             
-            ttk.Label(frame, text=f"{original}:", width=25, anchor=tk.W).pack(side=tk.LEFT, padx=5)
+            # Checkbox para visibilidade
+            check_var = tk.BooleanVar(value=self.visible_columns.get(original, True))
+            checkbox = ttk.Checkbutton(frame, variable=check_var)
+            checkbox.pack(side=tk.LEFT, padx=5)
+            checkbox_vars.append((original, check_var))
+            
+            ttk.Label(frame, text=f"{original}:", width=22, anchor=tk.W).pack(side=tk.LEFT, padx=5)
             
             var = tk.StringVar(value=current)
             entry = ttk.Entry(frame, textvariable=var, width=30)
@@ -676,17 +812,26 @@ class SpreadsheetApp:
             new_labels = [var.get() for var in entry_vars]
             self.column_labels = new_labels
             
-            # Atualiza cabeçalhos da tabela
-            self.update_column_headers()
+            # Atualiza visibilidade das colunas
+            for original_col, check_var in checkbox_vars:
+                self.visible_columns[original_col] = check_var.get()
+            
+            # Salva configuração
+            self.save_config()
+            
+            # Recria a interface com as colunas visíveis
+            self.recreate_tree()
             
             # Atualiza combo de busca
             if hasattr(self, 'search_options_frame'):
                 for widget in self.search_options_frame.winfo_children():
                     if isinstance(widget, ttk.Combobox):
-                        widget['values'] = ["Todas"] + self.column_labels
+                        visible_labels = [self.column_labels[i] for i, col in enumerate(self.original_columns) 
+                                         if self.visible_columns.get(col, True)]
+                        widget['values'] = ["Todas"] + visible_labels
             
             dialog.destroy()
-            messagebox.showinfo("Sucesso", "Labels atualizados!")
+            messagebox.showinfo("Sucesso", "Labels e visibilidade atualizados!")
         
         ttk.Button(dialog, text="Salvar", command=save_labels).pack(pady=10)
     
@@ -702,25 +847,48 @@ class SpreadsheetApp:
         if not row_id:
             return
         
-        # Obtém índice da coluna
-        col_index = int(column.replace('#', '')) - 1
+        # Obtém índice da coluna visível
+        visible_col_index = int(column.replace('#', '')) - 1
+        
+        # Mapeia para índice da coluna real
+        visible_indices = self.get_visible_indices()
+        if visible_col_index >= len(visible_indices):
+            return
+        actual_col_index = visible_indices[visible_col_index]
+        
+        # Obtém o label da coluna
+        column_label = self.column_labels[actual_col_index]
+        original_column = self.original_columns[actual_col_index]
         
         # Não permite editar a coluna Numero CT-e (chave primária)
-        if col_index == 1:
+        if original_column == 'Numero CT-e':
             messagebox.showwarning("Aviso", "Não é possível editar a chave primária (Numero CT-e)")
             return
         
         # Obtém valores atuais
         current_values = self.tree.item(row_id, 'values')
-        current_value = current_values[col_index]
-        numero_cte = current_values[1]  # Numero CT-e está na posição 1
+        current_value = current_values[visible_col_index]
+        
+        # Encontra o Numero CT-e nos valores visíveis
+        # O Numero CT-e está na posição 1 da lista original
+        numero_cte_index_in_visible = None
+        for i, idx in enumerate(visible_indices):
+            if self.original_columns[idx] == 'Numero CT-e':
+                numero_cte_index_in_visible = i
+                break
+        
+        if numero_cte_index_in_visible is None:
+            messagebox.showerror("Erro", "Coluna 'Numero CT-e' deve estar visível para editar células")
+            return
+        
+        numero_cte = current_values[numero_cte_index_in_visible]
         
         # Cria janela de edição
         edit_window = tk.Toplevel(self.root)
         edit_window.title("Editar Célula")
         edit_window.geometry("400x150")
         
-        ttk.Label(edit_window, text=f"Editando: {self.column_labels[col_index]}").pack(pady=10)
+        ttk.Label(edit_window, text=f"Editando: {column_label}").pack(pady=10)
         
         value_var = tk.StringVar(value=current_value)
         entry = ttk.Entry(edit_window, textvariable=value_var, width=50)
@@ -730,10 +898,10 @@ class SpreadsheetApp:
         
         def save_edit():
             new_value = value_var.get()
-            if self.db.update_cell(numero_cte, self.column_labels[col_index], new_value):
+            if self.db.update_cell(numero_cte, column_label, new_value):
                 # Atualiza a visualização
                 new_values = list(current_values)
-                new_values[col_index] = new_value
+                new_values[visible_col_index] = new_value
                 self.tree.item(row_id, values=new_values)
                 edit_window.destroy()
                 self.status_var.set("Célula atualizada com sucesso")
@@ -748,6 +916,73 @@ class SpreadsheetApp:
         
         # Permite salvar com Enter
         entry.bind('<Return>', lambda e: save_edit())
+    
+    def highlight_row(self):
+        """Destaca a linha selecionada com uma cor"""
+        # Verifica se há uma linha selecionada
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("Aviso", "Selecione uma linha para destacar")
+            return
+        
+        row_id = selected_items[0]
+        current_values = self.tree.item(row_id, 'values')
+        
+        # Encontra o índice do Numero CT-e nas colunas visíveis
+        visible_indices = self.get_visible_indices()
+        numero_cte_index_in_visible = None
+        for i, idx in enumerate(visible_indices):
+            if self.original_columns[idx] == 'Numero CT-e':
+                numero_cte_index_in_visible = i
+                break
+        
+        if numero_cte_index_in_visible is None:
+            messagebox.showerror("Erro", "Coluna 'Numero CT-e' deve estar visível para destacar linhas")
+            return
+        
+        numero_cte = str(current_values[numero_cte_index_in_visible])
+        
+        # Cria diálogo de seleção de cor
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Destacar Linha")
+        dialog.geometry("300x320")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text=f"Escolha a cor para o CT-e: {numero_cte}", 
+                 font=('', 10, 'bold')).pack(pady=15)
+        
+        def apply_color(color_name):
+            if color_name:
+                self.highlights[numero_cte] = color_name
+                self.tree.item(row_id, tags=(color_name,))
+            else:
+                # Remove o highlight
+                if numero_cte in self.highlights:
+                    del self.highlights[numero_cte]
+                self.tree.item(row_id, tags=())
+            
+            self.save_config()
+            self.status_var.set(f"Linha {'destacada' if color_name else 'sem destaque'}")
+            dialog.destroy()
+        
+        # Botões de cores
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=10)
+        
+        for color_name, color_value in self.highlight_colors.items():
+            btn = tk.Button(button_frame, 
+                          text=color_name, 
+                          bg=color_value,
+                          width=15,
+                          height=2,
+                          command=lambda c=color_name: apply_color(c))
+            btn.pack(pady=5)
+        
+        # Botão para remover cor
+        ttk.Button(button_frame, 
+                  text="Remover Destaque", 
+                  command=lambda: apply_color(None)).pack(pady=10)
     
     def on_closing(self):
         """Fecha o banco de dados ao fechar a aplicação"""
