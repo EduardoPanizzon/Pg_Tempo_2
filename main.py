@@ -5,6 +5,11 @@ import csv
 from datetime import datetime
 import os
 import json
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import cm
 
 
 class DatabaseManager:
@@ -192,8 +197,12 @@ class SpreadsheetApp:
         self.highlight_colors = {
             'Amarelo': '#FFFF99',
             'Verde': '#99FF99',
-            'Azul': '#99CCFF'
+            'Vermelho': '#FF9999'
         }
+        
+        # Ordenação de colunas (lista ordenada de tuplas: [(coluna, direção), ...])
+        # direção pode ser 'asc' ou 'desc'
+        self.sort_columns = []
         
         # Carrega configurações salvas (filtros, colunas visíveis e highlights)
         self.load_config()
@@ -215,8 +224,10 @@ class SpreadsheetApp:
         ttk.Button(top_frame, text="Importar CSV", command=self.import_csv).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Configurar Filtro Global", command=self.config_global_filter).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Limpar Filtros Locais", command=self.clear_local_filters).pack(side=tk.LEFT, padx=5)
+        ttk.Button(top_frame, text="Limpar Ordenações", command=lambda: self.clear_all_sorts()).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Editar Labels", command=self.edit_column_labels).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Destacar Linha", command=self.highlight_row).pack(side=tk.LEFT, padx=5)
+        ttk.Button(top_frame, text="Gerar Relatório", command=self.generate_report).pack(side=tk.LEFT, padx=5)
         ttk.Button(top_frame, text="Atualizar", command=self.load_data).pack(side=tk.LEFT, padx=5)
         
         # Frame de busca
@@ -261,7 +272,7 @@ class SpreadsheetApp:
         hsb = ttk.Scrollbar(table_frame, orient="horizontal")
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         
-        # Treeview (tabela)
+        # Treeview (tabela) com cabeçalhos nativos
         visible_labels = self.get_visible_labels()
         self.tree = ttk.Treeview(table_frame, 
                                 columns=visible_labels,
@@ -272,9 +283,9 @@ class SpreadsheetApp:
         vsb.config(command=self.tree.yview)
         hsb.config(command=self.tree.xview)
         
-        # Configura colunas visíveis
+        # Configura colunas visíveis com cabeçalhos clicáveis
+        self.update_column_headers()
         for col in visible_labels:
-            self.tree.heading(col, text=col, command=lambda c=col: self.on_column_click(c))
             self.tree.column(col, width=120, anchor=tk.W)
         
         # Configura tags de cores para highlights
@@ -286,12 +297,12 @@ class SpreadsheetApp:
         # Bind para edição de células
         self.tree.bind('<Double-1>', self.on_double_click)
         
-        # Atualiza cabeçalhos com indicadores de filtro
-        self.update_column_headers()
+        # Bind para botão direito abre filtro nos cabeçalhos
+        self.tree.bind('<Button-3>', self.on_right_click_header)
         
         # Status bar
         self.status_var = tk.StringVar()
-        self.status_var.set("Pronto")
+        self.status_var.set("Pronto | Clique no cabeçalho para ordenar | Clique direito no cabeçalho para filtrar")
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.pack(fill=tk.X, side=tk.BOTTOM)
     
@@ -304,116 +315,97 @@ class SpreadsheetApp:
             self.search_options_frame.pack(fill=tk.X, side=tk.TOP, after=self.root.winfo_children()[1])
             self.search_expanded = True
     
-    def load_config(self):
-        """Carrega configurações salvas do arquivo (filtros, colunas visíveis, labels e highlights)"""
-        try:
-            if os.path.exists(self.config_file):
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    self.global_filters = config.get('global_filters', {})
-                    saved_visible = config.get('visible_columns', {})
-                    # Atualiza visible_columns com valores salvos
-                    if saved_visible:
-                        for col in self.original_columns:
-                            if col in saved_visible:
-                                self.visible_columns[col] = saved_visible[col]
-                    # Carrega labels personalizados
-                    saved_labels = config.get('column_labels', [])
-                    if saved_labels and len(saved_labels) == len(self.original_columns):
-                        self.column_labels = saved_labels
-                    # Carrega highlights
-                    self.highlights = config.get('highlights', {})
-        except Exception as e:
-            print(f"Erro ao carregar configurações: {e}")
-            self.global_filters = {}
-    
-    def save_config(self):
-        """Salva configurações em arquivo (filtros, colunas visíveis, labels e highlights)"""
-        try:
-            config = {
-                'global_filters': self.global_filters,
-                'visible_columns': self.visible_columns,
-                'column_labels': self.column_labels,
-                'highlights': self.highlights
-            }
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(config, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Erro ao salvar configurações: {e}")
-    
     def update_column_headers(self):
-        """Atualiza cabeçalhos das colunas com indicador de filtro ativo (*)"""
+        """Atualiza cabeçalhos das colunas com indicadores de ordenação e filtro"""
         visible_labels = self.get_visible_labels()
         for i, col in enumerate(visible_labels):
+            display_text = col
+            
+            # Adiciona indicador de ordenação
+            sort_symbol = self.get_sort_symbol(col)
+            display_text = f"{display_text} {sort_symbol}"
+            
+            # Adiciona indicador de filtro
             if col in self.local_filters:
-                display_text = f"{col} *"
-            else:
-                display_text = col
-            self.tree.heading(i, text=display_text, command=lambda c=col: self.on_column_click(c))
+                display_text += " *"
+            
+            # Configura o cabeçalho com clique simples para ordenação e Shift+clique para filtro
+            self.tree.heading(i, text=display_text, 
+                            command=lambda c=col: self.on_column_click(c))
     
-    def get_visible_labels(self):
-        """Retorna lista de labels das colunas visíveis"""
-        return [self.column_labels[i] for i, col in enumerate(self.original_columns) 
-                if self.visible_columns.get(col, True)]
-    
-    def get_visible_indices(self):
-        """Retorna lista de índices das colunas visíveis"""
-        return [i for i, col in enumerate(self.original_columns) 
-                if self.visible_columns.get(col, True)]
-    
-    def recreate_tree(self):
-        """Recria a árvore com as colunas visíveis"""
-        # Obtém o frame da tabela
-        table_frame = self.tree.master
-        
-        # Remove a árvore antiga
-        self.tree.destroy()
-        
-        # Obtém os scrollbars existentes
-        scrollbars = [w for w in table_frame.winfo_children() if isinstance(w, ttk.Scrollbar)]
-        vsb = None
-        hsb = None
-        for sb in scrollbars:
-            if sb.cget('orient') == 'vertical':
-                vsb = sb
-            elif sb.cget('orient') == 'horizontal':
-                hsb = sb
-        
-        # Cria nova árvore com colunas visíveis
-        visible_labels = self.get_visible_labels()
-        self.tree = ttk.Treeview(table_frame, 
-                                columns=visible_labels,
-                                show='headings',
-                                yscrollcommand=vsb.set if vsb else None,
-                                xscrollcommand=hsb.set if hsb else None)
-        
-        if vsb:
-            vsb.config(command=self.tree.yview)
-        if hsb:
-            hsb.config(command=self.tree.xview)
-        
-        # Configura colunas visíveis
-        for col in visible_labels:
-            self.tree.heading(col, text=col, command=lambda c=col: self.on_column_click(c))
-            self.tree.column(col, width=120, anchor=tk.W)
-        
-        # Configura tags de cores para highlights
-        for color_name, color_value in self.highlight_colors.items():
-            self.tree.tag_configure(color_name, background=color_value)
-        
-        self.tree.pack(fill=tk.BOTH, expand=True)
-        
-        # Bind para edição de células
-        self.tree.bind('<Double-1>', self.on_double_click)
-        
-        # Atualiza cabeçalhos com indicadores de filtro
-        self.update_column_headers()
-        
-        # Recarrega dados
-        self.load_data()
+    def get_sort_symbol(self, column_name):
+        """Retorna o símbolo de ordenação para uma coluna"""
+        for sort_col, direction in self.sort_columns:
+            if sort_col == column_name:
+                if direction == 'asc':
+                    return '↑'
+                else:
+                    return '↓'
+        return '—'
     
     def on_column_click(self, column_name):
-        """Abre diálogo de filtro ao clicar no cabeçalho da coluna"""
+        """Clique no cabeçalho: clique simples cicla ordenação, Shift+clique abre filtro"""
+        # Verifica se Shift está pressionado
+        if self.root.winfo_containing(self.root.winfo_pointerx(), self.root.winfo_pointery()):
+            # Tenta detectar se shift está pressionado através do estado do evento
+            # Como não temos acesso direto ao evento aqui, vamos usar um approach diferente
+            # Vamos fazer que clique simples ordena
+            self.cycle_sort(column_name)
+    
+    def on_right_click_header(self, event):
+        """Clique direito no cabeçalho abre filtro"""
+        region = self.tree.identify_region(event.x, event.y)
+        if region == "heading":
+            column = self.tree.identify_column(event.x)
+            col_index = int(column.replace('#', '')) - 1
+            visible_labels = self.get_visible_labels()
+            if 0 <= col_index < len(visible_labels):
+                column_name = visible_labels[col_index]
+                self.open_filter_dialog(column_name)
+    
+    def on_column_right_click(self, event, column_name):
+        """Clique direito no cabeçalho abre filtro"""
+        self.open_filter_dialog(column_name)
+    
+    def cycle_sort(self, column_name):
+        """Cicla através dos estados de ordenação: — → ↑ → ↓ → —"""
+        # Encontra estado atual
+        current_state = None
+        for sort_col, direction in self.sort_columns:
+            if sort_col == column_name:
+                current_state = direction
+                break
+        
+        # Remove esta coluna da lista de ordenação
+        self.sort_columns = [(col, dir) for col, dir in self.sort_columns if col != column_name]
+        
+        # Cicla para o próximo estado
+        if current_state is None:
+            # — → ↑
+            self.sort_columns.append((column_name, 'asc'))
+        elif current_state == 'asc':
+            # ↑ → ↓
+            self.sort_columns.append((column_name, 'desc'))
+        # Se for 'desc', não adiciona de volta (↓ → —)
+        
+        # Atualiza cabeçalho
+        new_symbol = self.get_sort_symbol(column_name)
+        self.update_column_headers()
+        
+        # Salva e recarrega
+        self.save_config()
+        self.load_data()
+        
+        # Atualiza status
+        if new_symbol == '↑':
+            self.status_var.set(f"Ordenando por '{column_name}' - Crescente")
+        elif new_symbol == '↓':
+            self.status_var.set(f"Ordenando por '{column_name}' - Decrescente")
+        else:
+            self.status_var.set(f"Ordenação removida de '{column_name}'")
+    
+    def open_filter_dialog(self, column_name):
+        """Abre diálogo de filtro para uma coluna"""
         dialog = tk.Toplevel(self.root)
         dialog.title(f"Filtrar: {column_name}")
         dialog.geometry("450x350")
@@ -476,14 +468,14 @@ class SpreadsheetApp:
                     'type': filter_type_var.get(),
                     'value': val
                 }
-                self.update_column_headers()
+                self.update_filter_indicators()
                 self.load_data()
                 dialog.destroy()
         
         def remove_filter():
             if column_name in self.local_filters:
                 del self.local_filters[column_name]
-                self.update_column_headers()
+                self.update_filter_indicators()
                 self.load_data()
             dialog.destroy()
         
@@ -494,8 +486,122 @@ class SpreadsheetApp:
         # Enter para aplicar
         value_entry.bind('<Return>', lambda e: apply_filter())
     
+    def update_filter_indicators(self):
+        """Atualiza os indicadores de filtro nos cabeçalhos"""
+        self.update_column_headers()
+    
+    def load_config(self):
+        """Carrega configurações salvas do arquivo (filtros, colunas visíveis, labels e highlights)"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    self.global_filters = config.get('global_filters', {})
+                    saved_visible = config.get('visible_columns', {})
+                    # Atualiza visible_columns com valores salvos
+                    if saved_visible:
+                        for col in self.original_columns:
+                            if col in saved_visible:
+                                self.visible_columns[col] = saved_visible[col]
+                    # Carrega labels personalizados
+                    saved_labels = config.get('column_labels', [])
+                    if saved_labels and len(saved_labels) == len(self.original_columns):
+                        self.column_labels = saved_labels
+                    # Carrega highlights
+                    self.highlights = config.get('highlights', {})
+                    # Carrega ordenação
+                    self.sort_columns = config.get('sort_columns', [])
+        except Exception as e:
+            print(f"Erro ao carregar configurações: {e}")
+            self.global_filters = {}
+    
+    def save_config(self):
+        """Salva configurações em arquivo (filtros, colunas visíveis, labels e highlights)"""
+        try:
+            config = {
+                'global_filters': self.global_filters,
+                'visible_columns': self.visible_columns,
+                'column_labels': self.column_labels,
+                'highlights': self.highlights,
+                'sort_columns': self.sort_columns
+            }
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Erro ao salvar configurações: {e}")
+    
+    def get_visible_labels(self):
+        """Retorna lista de labels das colunas visíveis"""
+        return [self.column_labels[i] for i, col in enumerate(self.original_columns) 
+                if self.visible_columns.get(col, True)]
+    
+    def get_visible_indices(self):
+        """Retorna lista de índices das colunas visíveis"""
+        return [i for i, col in enumerate(self.original_columns) 
+                if self.visible_columns.get(col, True)]
+    
+    def recreate_tree(self):
+        """Recria a árvore com as colunas visíveis"""
+        # Obtém o frame da tabela
+        table_frame = self.tree.master
+        
+        # Remove a árvore antiga
+        self.tree.destroy()
+        
+        # Obtém os scrollbars existentes
+        scrollbars = [w for w in table_frame.winfo_children() if isinstance(w, ttk.Scrollbar)]
+        vsb = None
+        hsb = None
+        for sb in scrollbars:
+            if sb.cget('orient') == 'vertical':
+                vsb = sb
+            elif sb.cget('orient') == 'horizontal':
+                hsb = sb
+        
+        # Cria nova árvore com colunas visíveis
+        visible_labels = self.get_visible_labels()
+        self.tree = ttk.Treeview(table_frame, 
+                                columns=visible_labels,
+                                show='headings',
+                                yscrollcommand=vsb.set if vsb else None,
+                                xscrollcommand=hsb.set if hsb else None)
+        
+        if vsb:
+            vsb.config(command=self.tree.yview)
+        if hsb:
+            hsb.config(command=self.tree.xview)
+        
+        # Configura colunas visíveis com cabeçalhos
+        self.update_column_headers()
+        for col in visible_labels:
+            self.tree.column(col, width=120, anchor=tk.W)
+        
+        # Configura tags de cores para highlights
+        for color_name, color_value in self.highlight_colors.items():
+            self.tree.tag_configure(color_name, background=color_value)
+        
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        
+        # Bind para edição de células
+        self.tree.bind('<Double-1>', self.on_double_click)
+        
+        # Bind para botão direito abre filtro nos cabeçalhos
+        self.tree.bind('<Button-3>', self.on_right_click_header)
+        
+        # Recarrega dados
+        self.load_data()
+    
+    def clear_all_sorts(self, dialog=None):
+        """Limpa todas as ordenações"""
+        self.sort_columns = []
+        self.save_config()
+        self.update_column_headers()
+        self.load_data()
+        if dialog:
+            dialog.destroy()
+    
     def load_data(self):
-        """Carrega dados do banco e aplica filtros locais"""
+        """Carrega dados do banco, aplica filtros locais e ordenação"""
         # Limpa a tabela
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -545,6 +651,10 @@ class SpreadsheetApp:
                     filtered_data.append(row)
             data = filtered_data
         
+        # Aplica ordenação se houver colunas configuradas
+        if self.sort_columns:
+            data = self.sort_data(data)
+        
         # Insere dados na tabela (reordena para corresponder às colunas)
         # Mapeia todas as colunas no formato de exibição
         all_columns_order = [1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]  # emissao_cte, numero_cte, notas, ...
@@ -567,6 +677,60 @@ class SpreadsheetApp:
                 self.tree.insert('', tk.END, values=display_row)
         
         self.status_var.set(f"Total de registros: {len(data)}")
+    
+    def sort_data(self, data):
+        """Ordena os dados com base nas colunas configuradas"""
+        if not self.sort_columns:
+            return data
+        
+        # Mapeamento de nomes de colunas para índices no banco de dados
+        column_to_db_index = {
+            'Emissão CT-e': 1,
+            'Numero CT-e': 0,
+            'Notas': 2,
+            'Remetente': 3,
+            'Destinatário': 4,
+            'Cidade Destino CT-e': 5,
+            'Representante Entrega': 6,
+            'Filial Resp. Entrega': 7,
+            'Status Entrega Tela SAC': 8,
+            'Data Chegada': 9,
+            'Vendedor': 10,
+            'Previsão Entrega': 11,
+            'Última Ocorrência': 12
+        }
+        
+        # Cria lista de dados para ordenar
+        data_list = list(data)
+        
+        # Ordena por múltiplas colunas (do último para o primeiro para manter prioridade)
+        for column_name, direction in reversed(self.sort_columns):
+            column_index = column_to_db_index.get(column_name, 0)
+            reverse = (direction == 'desc')
+            
+            # Ordena com tratamento de valores vazios e numéricos
+            data_list.sort(
+                key=lambda row: self.get_sort_key(row[column_index]),
+                reverse=reverse
+            )
+        
+        return data_list
+    
+    def get_sort_key(self, value):
+        """Retorna chave de ordenação tratando valores vazios e tentando conversão numérica"""
+        if not value or str(value).strip() == '':
+            return (2, '')  # Valores vazios vão por último
+        
+        value_str = str(value).strip()
+        
+        # Tenta converter para número (para ordenação numérica correta)
+        try:
+            # Remove espaços e tenta converter para float
+            num_value = float(value_str.replace(',', '.').replace(' ', ''))
+            return (0, num_value)  # Números primeiro
+        except ValueError:
+            # Se não for número, retorna como string em lowercase
+            return (1, value_str.lower())  # Strings depois
     
     def import_csv(self):
         """Importa arquivo CSV"""
@@ -713,7 +877,7 @@ class SpreadsheetApp:
     def clear_local_filters(self):
         """Limpa todos os filtros locais"""
         self.local_filters.clear()
-        self.update_column_headers()
+        self.update_filter_indicators()
         self.load_data()
         messagebox.showinfo("Filtros Limpos", "Todos os filtros locais foram removidos")
     
@@ -898,7 +1062,7 @@ class SpreadsheetApp:
         
         def save_edit():
             new_value = value_var.get()
-            if self.db.update_cell(numero_cte, column_label, new_value):
+            if self.db.update_cell(numero_cte, original_column, new_value):
                 # Atualiza a visualização
                 new_values = list(current_values)
                 new_values[visible_col_index] = new_value
@@ -983,6 +1147,182 @@ class SpreadsheetApp:
         ttk.Button(button_frame, 
                   text="Remover Destaque", 
                   command=lambda: apply_color(None)).pack(pady=10)
+    
+    def generate_report(self):
+        """Gera relatório em PDF com as linhas visíveis"""
+        # Verifica se há dados para exportar
+        if not self.tree.get_children():
+            messagebox.showwarning("Aviso", "Não há dados para exportar")
+            return
+        
+        # Cria diálogo de seleção de colunas
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Gerar Relatório PDF")
+        dialog.geometry("400x400")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text="Selecione as colunas para o relatório:", 
+                 font=('', 10, 'bold')).pack(pady=10)
+        
+        # Frame com scroll para checkboxes
+        canvas = tk.Canvas(dialog)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Checkboxes para cada coluna visível
+        visible_labels = self.get_visible_labels()
+        checkbox_vars = []
+        
+        for col_label in visible_labels:
+            var = tk.BooleanVar(value=True)
+            checkbox = ttk.Checkbutton(scrollable_frame, text=col_label, variable=var)
+            checkbox.pack(anchor=tk.W, padx=20, pady=5)
+            checkbox_vars.append((col_label, var))
+        
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=10)
+        
+        # Botões
+        button_frame = ttk.Frame(canvas)
+        button_frame.pack(pady=10,side=tk.BOTTOM)
+        
+        def select_all():
+            for _, var in checkbox_vars:
+                var.set(True)
+        
+        def deselect_all():
+            for _, var in checkbox_vars:
+                var.set(False)
+        
+        def generate():
+            # Obtém colunas selecionadas
+            selected_columns = [col for col, var in checkbox_vars if var.get()]
+            
+            if not selected_columns:
+                messagebox.showwarning("Aviso", "Selecione pelo menos uma coluna")
+                return
+            
+            dialog.destroy()
+            self.create_pdf_report(selected_columns)
+        
+        ttk.Button(button_frame, text="Selecionar Todas", command=select_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Desmarcar Todas", command=deselect_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Gerar PDF", command=generate).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancelar", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
+    
+    def create_pdf_report(self, selected_columns):
+        """Cria o arquivo PDF com os dados filtrados e ordenados"""
+        # Solicita local para salvar o arquivo
+        file_path = filedialog.asksaveasfilename(
+            title="Salvar Relatório",
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf"), ("Todos os arquivos", "*.*")],
+            initialfile=f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # Cria o documento PDF em paisagem
+            doc = SimpleDocTemplate(file_path, pagesize=landscape(A4))
+            elements = []
+            styles = getSampleStyleSheet()
+            
+            # Título do relatório
+            title = Paragraph(f"<b>Relatório de CT-e - {datetime.now().strftime('%d/%m/%Y %H:%M')}</b>", 
+                            styles['Title'])
+            elements.append(title)
+            elements.append(Spacer(1, 0.5*cm))
+            
+            # Informações sobre filtros ativos
+            info_lines = []
+            if self.local_filters:
+                info_lines.append("<b>Filtros Ativos:</b>")
+                for col, config in self.local_filters.items():
+                    filter_type = "Contém" if config['type'] == 'contains' else "Não contém"
+                    info_lines.append(f"  • {col}: {filter_type} '{config['value']}'")
+            
+            if self.sort_columns:
+                if info_lines:
+                    info_lines.append("")
+                info_lines.append("<b>Ordenação:</b>")
+                for idx, (col, direction) in enumerate(self.sort_columns, 1):
+                    sort_dir = "Crescente" if direction == 'asc' else "Decrescente"
+                    info_lines.append(f"  {idx}. {col}: {sort_dir}")
+            
+            if info_lines:
+                info_text = "<br/>".join(info_lines)
+                info_para = Paragraph(info_text, styles['Normal'])
+                elements.append(info_para)
+                elements.append(Spacer(1, 0.5*cm))
+            
+            # Obtém índices das colunas selecionadas
+            visible_labels = self.get_visible_labels()
+            selected_indices = [i for i, col in enumerate(visible_labels) if col in selected_columns]
+            
+            # Prepara dados da tabela
+            table_data = [selected_columns]  # Cabeçalho
+            
+            # Coleta dados das linhas visíveis
+            for item in self.tree.get_children():
+                values = self.tree.item(item, 'values')
+                row_data = [str(values[i]) if i < len(values) else '' for i in selected_indices]
+                table_data.append(row_data)
+            
+            # Calcula largura das colunas dinamicamente
+            page_width = landscape(A4)[0] - 2*cm
+            col_width = page_width / len(selected_columns)
+            col_widths = [col_width] * len(selected_columns)
+            
+            # Cria tabela
+            table = Table(table_data, colWidths=col_widths)
+            
+            # Estilo da tabela
+            table_style = TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ])
+            
+            # Alterna cores das linhas
+            for i in range(1, len(table_data)):
+                if i % 2 == 0:
+                    table_style.add('BACKGROUND', (0, i), (-1, i), colors.lightgrey)
+            
+            table.setStyle(table_style)
+            elements.append(table)
+            
+            # Rodapé com total de registros
+            elements.append(Spacer(1, 0.5*cm))
+            footer = Paragraph(f"<b>Total de registros:</b> {len(table_data) - 1}", styles['Normal'])
+            elements.append(footer)
+            
+            # Gera o PDF
+            doc.build(elements)
+            
+            messagebox.showinfo("Sucesso", f"Relatório gerado com sucesso!\n\n{file_path}")
+            self.status_var.set(f"Relatório salvo em: {file_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao gerar relatório:\n{str(e)}")
     
     def on_closing(self):
         """Fecha o banco de dados ao fechar a aplicação"""
