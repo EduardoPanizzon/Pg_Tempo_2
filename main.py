@@ -8,7 +8,7 @@ import json
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 
 
@@ -1270,36 +1270,62 @@ class SpreadsheetApp:
             visible_labels = self.get_visible_labels()
             selected_indices = [i for i, col in enumerate(visible_labels) if col in selected_columns]
             
-            # Prepara dados da tabela
-            table_data = [selected_columns]  # Cabeçalho
+            # Estilo para células com quebra de linha
+            cell_style = ParagraphStyle(
+                'CellStyle',
+                parent=styles['Normal'],
+                fontSize=7,
+                leading=9,
+                wordWrap='CJK'
+            )
             
-            # Coleta dados das linhas visíveis
+            header_style = ParagraphStyle(
+                'HeaderStyle',
+                parent=styles['Normal'],
+                fontSize=8,
+                fontName='Helvetica-Bold',
+                leading=10,
+                wordWrap='CJK',
+                textColor=colors.whitesmoke
+            )
+            
+            # Prepara dados da tabela
+            # Cabeçalho com Paragraphs
+            table_data = [[Paragraph(str(col), header_style) for col in selected_columns]]
+            
+            # Coleta dados das linhas visíveis com Paragraphs para quebra automática
             for item in self.tree.get_children():
                 values = self.tree.item(item, 'values')
-                row_data = [str(values[i]) if i < len(values) else '' for i in selected_indices]
+                row_data = [Paragraph(str(values[i]) if i < len(values) else '', cell_style) 
+                           for i in selected_indices]
                 table_data.append(row_data)
             
-            # Calcula largura das colunas dinamicamente
+            # Calcula largura das colunas com base no número de colunas
             page_width = landscape(A4)[0] - 2*cm
             col_width = page_width / len(selected_columns)
             col_widths = [col_width] * len(selected_columns)
             
             # Cria tabela
-            table = Table(table_data, colWidths=col_widths)
+            table = Table(table_data, colWidths=col_widths, repeatRows=1)
             
             # Estilo da tabela
             table_style = TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, 0), 8),
-                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                ('TOPPADDING', (0, 0), (-1, 0), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 5),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+                ('TOPPADDING', (0, 1), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 1), (-1, -1), 5),
                 ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 7),
-                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
             ])
             
             # Alterna cores das linhas
