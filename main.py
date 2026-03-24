@@ -684,8 +684,30 @@ class SpreadsheetApp:
         if not self.sort_columns:
             return data
         
-        # Mapeamento de nomes de colunas para índices no banco de dados
-        column_to_db_index = {
+        # Cria lista de dados para ordenar
+        data_list = list(data)
+        
+        # Ordena por múltiplas colunas (do último para o primeiro para manter prioridade)
+        for column_name, direction in reversed(self.sort_columns):
+            normalized_column_name = self.normalize_column_name(column_name)
+            column_index = self.get_db_column_index(normalized_column_name)
+            reverse = (direction == 'desc')
+            
+            # Ordena com tratamento de valores vazios e numéricos
+            data_list.sort(
+                key=lambda row: self.get_sort_key(
+                    row[column_index],
+                    normalized_column_name,
+                    column_index=column_index
+                ),
+                reverse=reverse
+            )
+        
+        return data_list
+
+    def get_db_column_index(self, column_name):
+        """Resolve o índice da coluna no banco aceitando nome original ou label customizada."""
+        original_to_db_index = {
             self.normalize_column_name('Emissão CT-e'): 1,
             self.normalize_column_name('Numero CT-e'): 0,
             self.normalize_column_name('Notas'): 2,
@@ -700,23 +722,20 @@ class SpreadsheetApp:
             self.normalize_column_name('Previsão Entrega'): 11,
             self.normalize_column_name('Última Ocorrência'): 12
         }
-        
-        # Cria lista de dados para ordenar
-        data_list = list(data)
-        
-        # Ordena por múltiplas colunas (do último para o primeiro para manter prioridade)
-        for column_name, direction in reversed(self.sort_columns):
-            normalized_column_name = self.normalize_column_name(column_name)
-            column_index = column_to_db_index.get(normalized_column_name, 0)
-            reverse = (direction == 'desc')
-            
-            # Ordena com tratamento de valores vazios e numéricos
-            data_list.sort(
-                key=lambda row: self.get_sort_key(row[column_index], normalized_column_name),
-                reverse=reverse
-            )
-        
-        return data_list
+
+        normalized_column_name = self.normalize_column_name(column_name)
+
+        # 1) tenta pelo nome original
+        if normalized_column_name in original_to_db_index:
+            return original_to_db_index[normalized_column_name]
+
+        # 2) tenta pelo label customizado atual
+        for i, label in enumerate(self.column_labels):
+            if self.normalize_column_name(label) == normalized_column_name:
+                original_col_name = self.original_columns[i]
+                return original_to_db_index.get(self.normalize_column_name(original_col_name), 0)
+
+        return 0
     
     def normalize_column_name(self, column_name):
         """Normaliza nome de coluna para tornar o mapeamento mais tolerante a variações."""
@@ -763,7 +782,7 @@ class SpreadsheetApp:
 
         return None
 
-    def get_sort_key(self, value, column_name=None):
+    def get_sort_key(self, value, column_name=None, column_index=None):
         """Retorna chave de ordenação com suporte a data, número e texto."""
         if not value or str(value).strip() == '':
             return (2, '')  # Valores vazios vão por último
@@ -771,13 +790,14 @@ class SpreadsheetApp:
         value_str = str(value).strip()
         normalized_column_name = self.normalize_column_name(column_name)
 
-        # Ordenação por data para colunas específicas.
-        date_columns = {
-            self.normalize_column_name('Emissão CT-e'),
-            self.normalize_column_name('Data Chegada'),
-            self.normalize_column_name('Previsão Entrega')
-        }
-        if normalized_column_name in date_columns:
+        # Ordenação por data para colunas específicas (por índice do banco).
+        date_column_indexes = {1, 9, 11, 12}
+
+        # Compatibilidade com chamadas antigas sem column_index.
+        if column_index is None:
+            column_index = self.get_db_column_index(normalized_column_name)
+
+        if column_index in date_column_indexes:
             parsed_date = self.parse_date_value(value_str)
             if parsed_date is not None:
                 return (0, parsed_date)
