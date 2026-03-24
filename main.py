@@ -736,11 +736,22 @@ class SpreadsheetApp:
         if not value_str:
             return None
 
+        # Normaliza variações comuns vindas de bancos/exports
+        # Ex.: "28/12/2021", 2021-12-28T00:00:00, 28/12/2021 10:30:00.123
+        value_str = value_str.strip('"\'')
+        value_str = value_str.replace('T', ' ')
+        value_str = re.sub(r'\.(\d+)$', '', value_str)  # remove milissegundos no final
+        value_str = re.sub(r'([+-]\d{2}:?\d{2}|Z)$', '', value_str).strip()  # remove timezone
+
         date_formats = [
             '%d/%m/%Y',
             '%d/%m/%Y %H:%M',
             '%d/%m/%Y %H:%M:%S',
+            '%d-%m-%Y',
+            '%d-%m-%Y %H:%M',
+            '%d-%m-%Y %H:%M:%S',
             '%Y-%m-%d',
+            '%Y-%m-%d %H:%M',
             '%Y-%m-%d %H:%M:%S'
         ]
 
