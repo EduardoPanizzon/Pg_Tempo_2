@@ -1131,18 +1131,36 @@ class SpreadsheetApp:
         # Cria janela de edição
         edit_window = tk.Toplevel(self.root)
         edit_window.title("Editar Célula")
-        edit_window.geometry("400x150")
-        
-        ttk.Label(edit_window, text=f"Editando: {column_label}").pack(pady=10)
-        
-        value_var = tk.StringVar(value=current_value)
-        entry = ttk.Entry(edit_window, textvariable=value_var, width=50)
-        entry.pack(pady=10, padx=20)
-        entry.focus()
-        entry.select_range(0, tk.END)
+        edit_window.geometry("680x320")
+        edit_window.minsize(480, 240)
+        edit_window.transient(self.root)
+        edit_window.grab_set()
+
+        edit_window.grid_columnconfigure(0, weight=1)
+        edit_window.grid_rowconfigure(1, weight=1)
+
+        ttk.Label(edit_window, text=f"Editando: {column_label}").grid(
+            row=0, column=0, padx=12, pady=(12, 6), sticky="w"
+        )
+
+        text_frame = ttk.Frame(edit_window)
+        text_frame.grid(row=1, column=0, padx=12, pady=6, sticky="nsew")
+        text_frame.grid_columnconfigure(0, weight=1)
+        text_frame.grid_rowconfigure(0, weight=1)
+
+        text_widget = tk.Text(text_frame, wrap="word", undo=True)
+        text_widget.grid(row=0, column=0, sticky="nsew")
+
+        text_scroll = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+        text_scroll.grid(row=0, column=1, sticky="ns")
+        text_widget.configure(yscrollcommand=text_scroll.set)
+
+        text_widget.insert("1.0", current_value)
+        text_widget.focus_set()
+        text_widget.tag_add("sel", "1.0", "end-1c")
         
         def save_edit():
-            new_value = value_var.get()
+            new_value = text_widget.get("1.0", "end-1c")
             if self.db.update_cell(numero_cte, original_column, new_value):
                 # Atualiza a visualização
                 new_values = list(current_values)
@@ -1154,13 +1172,13 @@ class SpreadsheetApp:
                 messagebox.showerror("Erro", "Não foi possível atualizar a célula")
         
         button_frame = ttk.Frame(edit_window)
-        button_frame.pack(pady=10)
+        button_frame.grid(row=2, column=0, pady=(6, 12))
         
         ttk.Button(button_frame, text="Salvar", command=save_edit).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Cancelar", command=edit_window.destroy).pack(side=tk.LEFT, padx=5)
         
-        # Permite salvar com Enter
-        entry.bind('<Return>', lambda e: save_edit())
+        # Ctrl+Enter salva sem impedir quebra de linha com Enter.
+        text_widget.bind('<Control-Return>', lambda e: (save_edit(), "break")[1])
     
     def highlight_row(self):
         """Destaca a linha selecionada com uma cor"""
