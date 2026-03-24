@@ -3,6 +3,7 @@ from tkinter import ttk, filedialog, messagebox
 import sqlite3
 import csv
 from datetime import datetime
+import re
 import os
 import json
 from reportlab.lib import colors
@@ -685,19 +686,19 @@ class SpreadsheetApp:
         
         # Mapeamento de nomes de colunas para índices no banco de dados
         column_to_db_index = {
-            'Emissão CT-e': 1,
-            'Numero CT-e': 0,
-            'Notas': 2,
-            'Remetente': 3,
-            'Destinatário': 4,
-            'Cidade Destino CT-e': 5,
-            'Representante Entrega': 6,
-            'Filial Resp. Entrega': 7,
-            'Status Entrega Tela SAC': 8,
-            'Data Chegada': 9,
-            'Vendedor': 10,
-            'Previsão Entrega': 11,
-            'Última Ocorrência': 12
+            self.normalize_column_name('Emissão CT-e'): 1,
+            self.normalize_column_name('Numero CT-e'): 0,
+            self.normalize_column_name('Notas'): 2,
+            self.normalize_column_name('Remetente'): 3,
+            self.normalize_column_name('Destinatário'): 4,
+            self.normalize_column_name('Cidade Destino CT-e'): 5,
+            self.normalize_column_name('Representante Entrega'): 6,
+            self.normalize_column_name('Filial Resp. Entrega'): 7,
+            self.normalize_column_name('Status Entrega Tela SAC'): 8,
+            self.normalize_column_name('Data Chegada'): 9,
+            self.normalize_column_name('Vendedor'): 10,
+            self.normalize_column_name('Previsão Entrega'): 11,
+            self.normalize_column_name('Última Ocorrência'): 12
         }
         
         # Cria lista de dados para ordenar
@@ -705,23 +706,72 @@ class SpreadsheetApp:
         
         # Ordena por múltiplas colunas (do último para o primeiro para manter prioridade)
         for column_name, direction in reversed(self.sort_columns):
-            column_index = column_to_db_index.get(column_name, 0)
+            normalized_column_name = self.normalize_column_name(column_name)
+            column_index = column_to_db_index.get(normalized_column_name, 0)
             reverse = (direction == 'desc')
             
             # Ordena com tratamento de valores vazios e numéricos
             data_list.sort(
-                key=lambda row: self.get_sort_key(row[column_index]),
+                key=lambda row: self.get_sort_key(row[column_index], normalized_column_name),
                 reverse=reverse
             )
         
         return data_list
     
-    def get_sort_key(self, value):
-        """Retorna chave de ordenação tratando valores vazios e tentando conversão numérica"""
+    def normalize_column_name(self, column_name):
+        """Normaliza nome de coluna para tornar o mapeamento mais tolerante a variações."""
+        if column_name is None:
+            return ''
+
+        normalized = str(column_name).strip().strip('"\'')
+        normalized = re.sub(r'\s+', ' ', normalized)
+        return normalized.lower()
+
+    def parse_date_value(self, value):
+        """Converte texto de data para datetime aceitando formatos comuns do CSV."""
+        if value is None:
+            return None
+
+        value_str = str(value).strip()
+        if not value_str:
+            return None
+
+        date_formats = [
+            '%d/%m/%Y',
+            '%d/%m/%Y %H:%M',
+            '%d/%m/%Y %H:%M:%S',
+            '%Y-%m-%d',
+            '%Y-%m-%d %H:%M:%S'
+        ]
+
+        for date_format in date_formats:
+            try:
+                return datetime.strptime(value_str, date_format)
+            except ValueError:
+                continue
+
+        return None
+
+    def get_sort_key(self, value, column_name=None):
+        """Retorna chave de ordenação com suporte a data, número e texto."""
         if not value or str(value).strip() == '':
             return (2, '')  # Valores vazios vão por último
         
         value_str = str(value).strip()
+        normalized_column_name = self.normalize_column_name(column_name)
+
+        # Ordenação por data para colunas específicas.
+        date_columns = {
+            self.normalize_column_name('Emissão CT-e'),
+            self.normalize_column_name('Data Chegada'),
+            self.normalize_column_name('Previsão Entrega')
+        }
+        if normalized_column_name in date_columns:
+            parsed_date = self.parse_date_value(value_str)
+            if parsed_date is not None:
+                return (0, parsed_date)
+            # Se não conseguir converter, mantém como texto para não quebrar ordenação.
+            return (1, value_str.lower())
         
         # Tenta converter para número (para ordenação numérica correta)
         try:
